@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Jump Prince</title>
+    <style>
+      * {
+        box-sizing: border-box;
+        user-select: none;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #0f052d;
+      }
+      #app {
+        width: 100%;
+        min-height: 100%;
+        display: flex;
+        align-items: center;
+      }
+      #app canvas {
+        display: block;
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

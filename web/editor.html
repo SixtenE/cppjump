@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Level Editor – Jump Prince</title>
+    <style>
+      * { box-sizing: border-box; margin: 0; }
+      html, body {
+        height: 100%;
+        background: #1a1a2e;
+        color: #e0e0e0;
+        font-family: 'Segoe UI', system-ui, sans-serif;
+      }
+      #editor-wrapper {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 16px;
+        gap: 12px;
+      }
+      #editor-canvas canvas {
+        display: block;
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+      }
+      .controls {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+        justify-content: center;
+      }
+      button {
+        background: #2d2d44;
+        color: #e0e0e0;
+        border: 1px solid #444466;
+        padding: 6px 14px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 13px;
+        transition: background 0.1s;
+      }
+      button:hover { background: #3d3d55; }
+      button:active { background: #4d4d66; }
+      .screen-label {
+        font-size: 14px;
+        min-width: 110px;
+        text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="editor-wrapper">
+      <div id="editor-canvas"></div>
+      <div class="controls">
+        <button id="btn-prev-screen">&#9664; Prev</button>
+        <span id="screen-label" class="screen-label"></span>
+        <button id="btn-next-screen">Next &#9654;</button>
+        <button id="btn-add-screen">+ Add</button>
+        <button id="btn-delete-screen">Delete</button>
+        <button id="btn-export">Export JSON</button>
+        <button id="btn-import">Import JSON</button>
+        <input type="file" id="file-import" accept=".json" hidden />
+      </div>
+    </div>
+    <script type="module" src="/src/editor/main.ts"></script>
+  </body>
+</html>
