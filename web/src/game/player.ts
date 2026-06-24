@@ -47,6 +47,22 @@ export function createPlayer(): PlayerState {
   };
 }
 
+export function computePlayerSprite(p: PlayerState): number {
+  let sprite = 0;
+  if (p.isOnGround) {
+    sprite = 0;
+    if (Math.abs(p.velocity.x) > 0.01) {
+      sprite = 1 + (Math.floor(p.animTime * 6.0) % 2);
+    }
+    if (p.jumpHoldTime > 0.001) {
+      sprite = 4;
+    }
+  } else {
+    sprite = p.velocity.y > 0 ? 5 : 6;
+  }
+  return sprite;
+}
+
 export function updatePlayer(
   player: PlayerState,
   tiles: TileGrid,

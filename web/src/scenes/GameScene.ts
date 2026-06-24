@@ -7,11 +7,21 @@ import {
   BACKGROUND_COLOR,
 } from '../game/constants';
 import { resolveBoxCollisionWithTilemap } from '../game/collision';
-import { createPlayer, updatePlayer, updatePlayerDebugFly } from '../game/player';
+import { createPlayer, updatePlayer, updatePlayerDebugFly, computePlayerSprite } from '../game/player';
 import { getActiveScreen } from '../game/worldScreens';
 import { getDebugTextResolution } from '../pixelScale';
 import { isTouchLeftDown, isTouchRightDown, isTouchJumpDown, consumeTouchEdges } from '../game/touchControls';
 import type { PlayerState, TileGrid } from '../game/types';
+import { Network } from '../net/Network';
+import type { RemotePlayerState } from '../net/Network';
+
+interface RemotePlayerView {
+  sprite: Phaser.GameObjects.Sprite;
+  nameText: Phaser.GameObjects.Text;
+  state: RemotePlayerState;
+  renderX: number;
+  renderY: number;
+}
 
 export class GameScene extends Phaser.Scene {
   private player!: PlayerState;
@@ -33,6 +43,9 @@ export class GameScene extends Phaser.Scene {
 
   private spaceWasDown = false;
   private isDebugEnabled = true;
+
+  private network: Network | null = null;
+  private remotePlayers = new Map<number, RemotePlayerView>();
 
   private hudText!: Phaser.GameObjects.Text;
   private bgmAudio: HTMLAudioElement | null = null;
@@ -72,6 +85,9 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.playerSprite = this.add.sprite(0, 0, 'player', 0).setOrigin(0, 0);
+    this.playerSprite.setDepth(5);
+
+    this.setupNetwork();
 
     const kb = this.input.keyboard!;
     this.keySpace = kb.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
@@ -223,6 +239,8 @@ export class GameScene extends Phaser.Scene {
 
     this.redrawTiles(tiles);
     this.redrawPlayer(screenOffsetY);
+    this.updateRemotePlayers(screenOffsetY, delta);
+    this.sendLocalState(screenIndex);
     this.redrawDebug(screenIndex, screenOffsetY);
   }
 
@@ -263,18 +281,7 @@ export class GameScene extends Phaser.Scene {
     const p = this.player;
     p.animTime += this.game.loop.delta / 1000;
 
-    let sprite = 0;
-    if (p.isOnGround) {
-      sprite = 0;
-      if (Math.abs(p.velocity.x) > 0.01) {
-        sprite = 1 + (Math.floor(p.animTime * 6.0) % 2);
-      }
-      if (p.jumpHoldTime > 0.001) {
-        sprite = 4;
-      }
-    } else {
-      sprite = p.velocity.y > 0 ? 5 : 6;
-    }
+    const sprite = computePlayerSprite(p);
 
     this.playerSprite.setFrame(sprite);
     const px = p.position.x * TILE_PIXELS - 8;
@@ -294,7 +301,108 @@ export class GameScene extends Phaser.Scene {
         `player.jumpHoldTime = ${this.player.jumpHoldTime.toFixed(3)}`,
         `screenOffsetY = ${screenOffsetY}`,
         `screenIndex = ${screenIndex}`,
+        `players online: ${1 + this.remotePlayers.size}`,
+        this.network && this.network.id !== null ? `net id = ${this.network.id}${this.network.isConnected ? '' : ' (reconnecting)'}` : 'net: off',
       ].join('\n'),
+    );
+  }
+
+  private setupNetwork(): void {
+    if (this.network) return;
+    let name = 'Prince';
+    try {
+      const prompted = window.prompt('Your name?', 'Prince');
+      if (prompted) name = prompted.trim() || 'Prince';
+    } catch {
+      /* prompt unavailable */
+    }
+    try {
+      localStorage.setItem('jp_name', name);
+    } catch {
+      /* ignore */
+    }
+
+    this.network = new Network({
+      onReady: () => {
+        // id assigned
+      },
+      onPlayerJoin: (p) => this.ensureRemoteView(p),
+      onPlayerLeave: (id) => this.removeRemoteView(id),
+      onSnapshot: (players) => {
+        for (const p of players) this.ensureRemoteView(p);
+      },
+    });
+    this.network.connect(name);
+  }
+
+  private ensureRemoteView(state: RemotePlayerState): RemotePlayerView {
+    let view = this.remotePlayers.get(state.id);
+    if (!view) {
+      const sprite = this.add.sprite(0, 0, 'player', 0).setOrigin(0, 0);
+      sprite.setDepth(5);
+      const nameText = this.add
+        .text(0, 0, state.name, {
+          fontFamily: 'monospace',
+          fontSize: '8px',
+          color: '#ffe6a8',
+          resolution: getDebugTextResolution(this.game.canvas.parentElement),
+        })
+        .setDepth(6)
+        .setOrigin(0.5, 1);
+      view = {
+        sprite,
+        nameText,
+        state,
+        renderX: state.position.x,
+        renderY: state.position.y,
+      };
+      this.remotePlayers.set(state.id, view);
+    } else {
+      view.state = state;
+      if (state.name && state.name !== view.nameText.text) {
+        view.nameText.setText(state.name);
+      }
+    }
+    return view;
+  }
+
+  private removeRemoteView(id: number): void {
+    const view = this.remotePlayers.get(id);
+    if (!view) return;
+    view.sprite.destroy();
+    view.nameText.destroy();
+    this.remotePlayers.delete(id);
+  }
+
+  private updateRemotePlayers(screenOffsetY: number, delta: number): void {
+    const lerp = Math.min(1, delta * 12);
+    for (const view of this.remotePlayers.values()) {
+      view.renderX += (view.state.position.x - view.renderX) * lerp;
+      view.renderY += (view.state.position.y - view.renderY) * lerp;
+
+      view.sprite.setFrame(view.state.sprite);
+      view.sprite.setFlipX(!view.state.facing);
+      const px = view.renderX * TILE_PIXELS - 8;
+      const py = (view.renderY - screenOffsetY) * TILE_PIXELS - 10;
+      view.sprite.setPosition(px, py);
+      view.nameText.setPosition(px + 8, py - 2);
+    }
+  }
+
+  private sendLocalState(screen: number): void {
+    if (!this.network) return;
+    const p = this.player;
+    this.network.sendState(
+      {
+        position: { x: p.position.x, y: p.position.y },
+        velocity: { x: p.velocity.x, y: p.velocity.y },
+        facing: p.isFacingRight,
+        onGround: p.isOnGround,
+        animTime: p.animTime,
+        sprite: computePlayerSprite(p),
+        screen,
+      },
+      this.game.loop.delta / 1000,
     );
   }
 }
