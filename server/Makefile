@@ -1,5 +1,5 @@
 CXX ?= clang++
-CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -pthread
+CXXFLAGS ?= -std=c++17 -O3 -flto -Wall -Wextra -pthread
 TARGET := build/jump_server
 SRC := src/main.cpp
 

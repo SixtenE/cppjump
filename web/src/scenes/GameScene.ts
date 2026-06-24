@@ -47,6 +47,11 @@ export class GameScene extends Phaser.Scene {
   private network: Network | null = null;
   private remotePlayers = new Map<number, RemotePlayerView>();
 
+  // Track which screen's tiles are currently rendered so we only rebuild
+  // the tile sprites when the player moves to a different screen, not on
+  // every frame (the tilemap is static within a screen).
+  private lastRenderedScreenIndex = -1;
+
   private hudText!: Phaser.GameObjects.Text;
   private bgmAudio: HTMLAudioElement | null = null;
 
@@ -237,7 +242,11 @@ export class GameScene extends Phaser.Scene {
 
     resolveBoxCollisionWithTilemap(tiles, screenOffsetY, this.player.position, this.player.velocity, PLAYER_SIZE);
 
-    this.redrawTiles(tiles);
+    // Only rebuild tile sprites when the screen actually changes.
+    if (this.lastRenderedScreenIndex !== screenIndex) {
+      this.redrawTiles(tiles);
+      this.lastRenderedScreenIndex = screenIndex;
+    }
     this.redrawPlayer(screenOffsetY);
     this.updateRemotePlayers(screenOffsetY, delta);
     this.sendLocalState(screenIndex);

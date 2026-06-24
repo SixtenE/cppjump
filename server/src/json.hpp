@@ -3,6 +3,7 @@
 // Supports: null, bool, number (double), string, array, object.
 // Sufficient for flat/nested game protocol messages.
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -66,74 +67,96 @@ class Value {
     return isStr() ? str : (fallback.empty() ? empty : fallback);
   }
 
+  // Serialize directly into a single string buffer, with no per-node
+  // std::ostringstream allocation. This is the hot path used by the
+  // snapshot loop; serialize() is just a thin wrapper around it.
+  void writeTo(std::string& out) const;
+
   std::string serialize() const;
 };
 
 namespace detail {
 
-inline void escapeString(std::ostringstream& o, const std::string& s) {
-  o.put('"');
+inline void escapeString(std::string& out, const std::string& s) {
+  out.push_back('"');
   for (char c : s) {
     switch (c) {
-      case '"': o << "\\\""; break;
-      case '\\': o << "\\\\"; break;
-      case '\n': o << "\\n"; break;
-      case '\r': o << "\\r"; break;
-      case '\t': o << "\\t"; break;
-      case '\b': o << "\\b"; break;
-      case '\f': o << "\\f"; break;
+      case '"': out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      case '\b': out += "\\b"; break;
+      case '\f': out += "\\f"; break;
       default:
         if (static_cast<uint8_t>(c) < 0x20) {
-          o << "\\u" << std::hex << std::uppercase << (int)(uint8_t)c;
+          char buf[8];
+          std::snprintf(buf, sizeof(buf), "\\u%04X", (int)(uint8_t)c);
+          out += buf;
         } else {
-          o.put(c);
+          out.push_back(c);
         }
     }
   }
-  o.put('"');
+  out.push_back('"');
+}
+
+// Format a number the same way the old ostringstream path did: integers
+// (when finite, integral, and within safe bounds) as %lld, otherwise as
+// %g (6 significant digits, matching the iostream default).
+inline void writeNumber(std::string& out, double num) {
+  char buf[32];
+  int n;
+  if (std::isfinite(num) && num == std::floor(num) && std::fabs(num) < 1e15) {
+    n = std::snprintf(buf, sizeof(buf), "%lld", (long long)num);
+  } else {
+    n = std::snprintf(buf, sizeof(buf), "%g", num);
+  }
+  if (n > 0) out.append(buf, (size_t)n);
 }
 
 }  // namespace detail
 
-inline std::string Value::serialize() const {
-  std::ostringstream o;
+// Recursively write this value into a single string buffer. Unlike the
+// old serialize() (which built a new std::ostringstream per node and
+// concatenated temporary strings), this does zero per-node stream
+// allocations.
+inline void Value::writeTo(std::string& out) const {
   switch (type) {
-    case Null: o << "null"; break;
-    case Bool: o << (b ? "true" : "false"); break;
-    case Number: {
-      if (std::isfinite(num) && num == std::floor(num) &&
-          std::fabs(num) < 1e15) {
-        o << (long long)num;
-      } else {
-        o << num;
-      }
-      break;
-    }
-    case String: detail::escapeString(o, str); break;
+    case Null: out += "null"; break;
+    case Bool: out += (b ? "true" : "false"); break;
+    case Number: detail::writeNumber(out, num); break;
+    case String: detail::escapeString(out, str); break;
     case ArrayT: {
-      o.put('[');
+      out.push_back('[');
       for (size_t i = 0; i < arr->size(); i++) {
-        if (i) o.put(',');
-        o << (*arr)[i].serialize();
+        if (i) out.push_back(',');
+        (*arr)[i].writeTo(out);
       }
-      o.put(']');
+      out.push_back(']');
       break;
     }
     case ObjectT: {
-      o.put('{');
+      out.push_back('{');
       bool first = true;
       for (const auto& kv : *obj) {
-        if (!first) o.put(',');
+        if (!first) out.push_back(',');
         first = false;
-        detail::escapeString(o, kv.first);
-        o.put(':');
-        o << kv.second.serialize();
+        detail::escapeString(out, kv.first);
+        out.push_back(':');
+        kv.second.writeTo(out);
       }
-      o.put('}');
+      out.push_back('}');
       break;
     }
   }
-  return o.str();
+}
+
+inline std::string Value::serialize() const {
+  std::string out;
+  out.reserve(128);
+  writeTo(out);
+  return out;
 }
 
 class Parser {
