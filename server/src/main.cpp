@@ -62,34 +62,68 @@ struct Client {
   bool saidHello = false;
 };
 
-std::string sanitizeName(std::string name) {
+// Sanitize a client-supplied display name. The result is ALWAYS well-formed
+// UTF-8: names are relayed to every other client inside WebSocket text frames,
+// and RFC 6455 requires text frames to be valid UTF-8. A single invalid byte
+// sequence (e.g. a lone surrogate injected via a "\uD800" JSON escape) would
+// otherwise make browsers fail the connection, letting one malicious client
+// disconnect everyone else. We therefore decode strictly and copy only whole,
+// valid, non-control code points, dropping surrogates, overlong encodings and
+// any malformed bytes.
+std::string sanitizeName(const std::string& name) {
   std::string out;
   out.reserve(std::min(name.size(), kMaxNameLen));
-  for (unsigned char c : name) {
-    if (c < 0x20 || c == 0x7f) continue;
-    out.push_back(static_cast<char>(c));
-    if (out.size() >= kMaxNameLen) break;
-  }
-  // Drop a trailing incomplete UTF-8 sequence after byte truncation.
-  if (!out.empty()) {
-    size_t i = out.size();
-    size_t cont = 0;
-    while (i > 0 && (static_cast<unsigned char>(out[i - 1]) & 0xC0) == 0x80) {
-      i--;
-      cont++;
-    }
-    if (i == 0) {
-      out.clear();
+  // Minimum code point for a well-formed sequence of the given byte length
+  // (used to reject overlong encodings). Index by sequence length.
+  static const uint32_t kMinForLen[5] = {0, 0, 0x80, 0x800, 0x10000};
+  size_t i = 0;
+  const size_t n = name.size();
+  while (i < n) {
+    unsigned char c = static_cast<unsigned char>(name[i]);
+    uint32_t cp;
+    size_t seqLen;
+    if (c < 0x80) {
+      cp = c;
+      seqLen = 1;
+    } else if ((c & 0xE0) == 0xC0) {
+      cp = c & 0x1F;
+      seqLen = 2;
+    } else if ((c & 0xF0) == 0xE0) {
+      cp = c & 0x0F;
+      seqLen = 3;
+    } else if ((c & 0xF8) == 0xF0) {
+      cp = c & 0x07;
+      seqLen = 4;
     } else {
-      unsigned char lead = static_cast<unsigned char>(out[i - 1]);
-      int need = 1;
-      if ((lead & 0x80) == 0) need = 1;
-      else if ((lead & 0xE0) == 0xC0) need = 2;
-      else if ((lead & 0xF0) == 0xE0) need = 3;
-      else if ((lead & 0xF8) == 0xF0) need = 4;
-      else need = 99;  // invalid lead
-      if (cont + 1 < static_cast<size_t>(need)) out.resize(i - 1);
+      i++;  // stray continuation byte or invalid lead: drop and resync
+      continue;
     }
+    if (i + seqLen > n) break;  // truncated multi-byte sequence at end
+    bool ok = true;
+    for (size_t k = 1; k < seqLen; k++) {
+      unsigned char cc = static_cast<unsigned char>(name[i + k]);
+      if ((cc & 0xC0) != 0x80) {
+        ok = false;
+        break;
+      }
+      cp = (cp << 6) | (cc & 0x3F);
+    }
+    if (!ok) {
+      i++;  // malformed continuation: drop lead byte and resync
+      continue;
+    }
+    if (cp < kMinForLen[seqLen] || cp > 0x10FFFF ||
+        (cp >= 0xD800 && cp <= 0xDFFF)) {
+      i += seqLen;  // overlong, out of range, or surrogate: drop
+      continue;
+    }
+    if (cp < 0x20 || cp == 0x7f) {
+      i += seqLen;  // control character: drop
+      continue;
+    }
+    if (out.size() + seqLen > kMaxNameLen) break;  // budget in whole code points
+    out.append(name, i, seqLen);
+    i += seqLen;
   }
   size_t start = 0;
   while (start < out.size() && out[start] == ' ') start++;
