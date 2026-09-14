@@ -9,6 +9,15 @@ Each client simulates its own prince and reports its state (`position`,
 these states and broadcasts a `snapshot` of all players to every client at
 ~20 Hz. Remote princes are rendered with light interpolation.
 
+The relay still applies a few integrity limits so a client cannot impersonate
+another player or knock the process over:
+
+- `id` and `name` are assigned by the server; extra keys on `state` are dropped
+- names are truncated to 24 characters and control bytes are stripped
+- inbound WebSocket frames are capped (8 KiB), must be masked, and JSON nesting
+  is bounded
+- at most 32 concurrent sessions; hello/state messages are rate-limited
+
 ## Build
 
 You need a C++17 compiler (`clang++` or `g++`). No external libraries.

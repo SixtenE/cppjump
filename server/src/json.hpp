@@ -62,9 +62,10 @@ class Value {
   bool asBool(bool fallback = false) const {
     return isBool() ? b : fallback;
   }
-  const std::string& asStr(const std::string& fallback = "") const {
-    static const std::string empty;
-    return isStr() ? str : (fallback.empty() ? empty : fallback);
+  // Return by value so a non-string Value cannot dangle a reference to a
+  // temporary fallback (e.g. asStr("Prince") when type != String).
+  std::string asStr(const std::string& fallback = "") const {
+    return isStr() ? str : fallback;
   }
 
   // Serialize directly into a single string buffer, with no per-node
@@ -161,11 +162,16 @@ inline std::string Value::serialize() const {
 
 class Parser {
  public:
+  static constexpr int kMaxDepth = 8;
+  static constexpr size_t kMaxContainerLen = 64;
+  static constexpr size_t kMaxStringLen = 1024;
+  static constexpr size_t kMaxNumberLen = 64;
+
   explicit Parser(const std::string& src) : s_(src) {}
 
   Value parse() {
     skipWs();
-    Value v = parseValue();
+    Value v = parseValue(0);
     skipWs();
     return v;
   }
@@ -200,18 +206,19 @@ class Parser {
     if (g != c) throw std::runtime_error("JSON: expected");
   }
 
-  Value parseValue() {
+  Value parseValue(int depth) {
+    if (depth > kMaxDepth) throw std::runtime_error("JSON: too nested");
     skipWs();
     char c = peek();
-    if (c == '{') return parseObject();
-    if (c == '[') return parseArray();
+    if (c == '{') return parseObject(depth);
+    if (c == '[') return parseArray(depth);
     if (c == '"') return parseString();
     if (c == 't' || c == 'f') return parseBool();
     if (c == 'n') return parseNull();
     return parseNumber();
   }
 
-  Value parseObject() {
+  Value parseObject(int depth) {
     expect('{');
     Value v = Value::mkObj();
     skipWs();
@@ -221,8 +228,9 @@ class Parser {
       std::string key = parseString().str;
       skipWs();
       expect(':');
-      Value val = parseValue();
+      Value val = parseValue(depth + 1);
       (*v.obj)[key] = val;
+      if (v.obj->size() > kMaxContainerLen) throw std::runtime_error("JSON: object too large");
       skipWs();
       char c = next();
       if (c == ',') continue;
@@ -232,14 +240,15 @@ class Parser {
     return v;
   }
 
-  Value parseArray() {
+  Value parseArray(int depth) {
     expect('[');
     Value v = Value::mkArr();
     skipWs();
     if (peek() == ']') { next(); return v; }
     while (true) {
-      Value val = parseValue();
+      Value val = parseValue(depth + 1);
       v.arr->push_back(val);
+      if (v.arr->size() > kMaxContainerLen) throw std::runtime_error("JSON: array too large");
       skipWs();
       char c = next();
       if (c == ',') continue;
@@ -291,8 +300,13 @@ class Parser {
           default: out.push_back(e); break;
         }
       } else {
+        // RFC 8259: unescaped control characters are not allowed in strings.
+        if (static_cast<unsigned char>(c) < 0x20) {
+          throw std::runtime_error("JSON: raw control in string");
+        }
         out.push_back(c);
       }
+      if (out.size() > kMaxStringLen) throw std::runtime_error("JSON: string too long");
     }
     return Value::mkStr(out);
   }
@@ -320,6 +334,9 @@ class Parser {
       i_++;
       if (i_ < s_.size() && (s_[i_] == '+' || s_[i_] == '-')) i_++;
       while (i_ < s_.size() && (s_[i_] >= '0' && s_[i_] <= '9')) i_++;
+    }
+    if (i_ - start == 0 || i_ - start > kMaxNumberLen) {
+      throw std::runtime_error("JSON: bad number");
     }
     std::string numStr = s_.substr(start, i_ - start);
     try {

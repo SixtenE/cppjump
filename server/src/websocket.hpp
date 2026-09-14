@@ -8,6 +8,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
@@ -17,6 +18,10 @@
 
 #include "base64.hpp"
 #include "sha1.hpp"
+
+// Inbound payload cap: a hello/state JSON message is a few hundred bytes.
+// Rejecting larger frames prevents a client from forcing a huge allocation.
+constexpr size_t kMaxWsPayload = 8192;
 
 class WebSocket {
  public:
@@ -35,7 +40,15 @@ class WebSocket {
       ssize_t n = ::recv(fd_, buf, sizeof(buf), 0);
       if (n <= 0) return false;
       req.append(buf, (size_t)n);
-      if (req.find("\r\n\r\n") != std::string::npos) break;
+      auto hdrEnd = req.find("\r\n\r\n");
+      if (hdrEnd != std::string::npos) {
+        // Keep bytes that arrived after the HTTP header; they are the start
+        // of the WebSocket stream and must not be discarded.
+        size_t body = hdrEnd + 4;
+        if (body < req.size()) leftover_ = req.substr(body);
+        req.resize(body);
+        break;
+      }
       if (req.size() > 16384) return false;
     }
 
@@ -104,7 +117,11 @@ class WebSocket {
       if (!recvAll(&hdr1, 1)) return false;
       bool fin = (hdr0 & 0x80) != 0;
       int opcode = hdr0 & 0x0f;
+      // RSV bits must be 0 (no extensions negotiated).
+      if (hdr0 & 0x70) return false;
       bool masked = (hdr1 & 0x80) != 0;
+      // RFC 6455: client-to-server frames MUST be masked.
+      if (!masked) return false;
       uint64_t len = hdr1 & 0x7f;
       if (len == 126) {
         uint8_t e[2];
@@ -113,16 +130,24 @@ class WebSocket {
       } else if (len == 127) {
         uint8_t e[8];
         if (!recvAll(e, 8)) return false;
+        // Highest bit of the 64-bit length must be 0.
+        if (e[0] & 0x80) return false;
         len = 0;
         for (int i = 0; i < 8; i++) len = (len << 8) | e[i];
       }
+      // Cap before allocating. Control frames are also limited to 125 bytes.
+      bool isControl = opcode == 0x8 || opcode == 0x9 || opcode == 0xA;
+      if (isControl && (!fin || len > 125)) return false;
+      if (len > kMaxWsPayload) return false;
+      if (out.size() + (size_t)len > kMaxWsPayload) return false;
+
       uint8_t mask[4];
-      if (masked && !recvAll(mask, 4)) return false;
+      if (!recvAll(mask, 4)) return false;
       std::string payload((size_t)len, '\0');
       if (len > 0 && !recvAll(reinterpret_cast<uint8_t*>(payload.data()), (size_t)len))
         return false;
-      if (masked) {
-        for (size_t i = 0; i < payload.size(); i++) payload[i] = (char)((uint8_t)payload[i] ^ mask[i % 4]);
+      for (size_t i = 0; i < payload.size(); i++) {
+        payload[i] = (char)((uint8_t)payload[i] ^ mask[i % 4]);
       }
 
       if (opcode == 0x8) {  // close
@@ -133,12 +158,14 @@ class WebSocket {
         continue;
       } else if (opcode == 0xA) {  // pong
         continue;
-      } else if (opcode == 0x1 || opcode == 0x2 || opcode == 0x0) {
+      } else if (opcode == 0x1 || opcode == 0x0) {
+        // Text data only (this protocol is JSON). Continuation after a
+        // previous data frame is appended until FIN.
         out += payload;
         if (fin) return true;
       } else {
-        // Unknown opcode; ignore.
-        continue;
+        // Binary / unknown opcode: close.
+        return false;
       }
     }
   }
@@ -148,6 +175,28 @@ class WebSocket {
  private:
   int fd_;
   std::mutex sendMtx_;
+  std::string leftover_;  // bytes read past the HTTP handshake terminator
+
+  bool recvAll(uint8_t* dst, size_t n) {
+    size_t got = 0;
+    while (got < n) {
+      if (!leftover_.empty()) {
+        size_t take = std::min(leftover_.size(), n - got);
+        std::memcpy(dst + got, leftover_.data(), take);
+        leftover_.erase(0, take);
+        got += take;
+        continue;
+      }
+      ssize_t r = ::recv(fd_, dst + got, n - got, 0);
+      if (r < 0) {
+        if (errno == EINTR) continue;
+        return false;
+      }
+      if (r == 0) return false;
+      got += (size_t)r;
+    }
+    return true;
+  }
 
   int sendAll(const void* data, size_t n) {
     const char* p = (const char*)data;
@@ -164,20 +213,6 @@ class WebSocket {
   }
 
   int sendRaw(const uint8_t* data, size_t n) { return sendAll(data, n); }
-
-  bool recvAll(uint8_t* dst, size_t n) {
-    size_t got = 0;
-    while (got < n) {
-      ssize_t r = ::recv(fd_, dst + got, n - got, 0);
-      if (r < 0) {
-        if (errno == EINTR) continue;
-        return false;
-      }
-      if (r == 0) return false;
-      got += (size_t)r;
-    }
-    return true;
-  }
 
   void sendPong(const std::string& payload) {
     std::vector<uint8_t> f;

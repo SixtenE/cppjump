@@ -321,7 +321,7 @@ export class GameScene extends Phaser.Scene {
     let name = 'Prince';
     try {
       const prompted = window.prompt('Your name?', 'Prince');
-      if (prompted) name = prompted.trim() || 'Prince';
+      if (prompted) name = prompted.trim().slice(0, 24) || 'Prince';
     } catch {
       /* prompt unavailable */
     }

@@ -8,6 +8,15 @@
 :{$PORT:8080} {
 	encode gzip zstd
 
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+		Cross-Origin-Opener-Policy same-origin
+		-Server
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self'; connect-src 'self' ws: wss:; worker-src 'self' blob:; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+	}
+
 	# WebSocket relay: Caddy upgrades and proxies to the C++ server.
 	handle /ws {
 		reverse_proxy 127.0.0.1:8090
