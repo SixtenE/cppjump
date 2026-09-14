@@ -48,7 +48,14 @@ function defaultServerUrl(): string {
 
   // 1) Explicit full server URL override, e.g. ?server=wss://foo.up.railway.app/ws
   const explicit = params.get('server');
-  if (explicit) return explicit;
+  if (explicit) {
+    try {
+      const u = new URL(explicit);
+      if (u.protocol === 'ws:' || u.protocol === 'wss:') return explicit;
+    } catch {
+      /* ignore invalid override */
+    }
+  }
 
   // 2) Production: served over HTTPS behind a reverse proxy on the same
   //    origin, so use a secure WebSocket on the /ws path (proxied to the
@@ -63,20 +70,35 @@ function defaultServerUrl(): string {
   return `ws://${host}:${port}`;
 }
 
+const MAX_NAME_LEN = 24;
+
+function sanitizeName(raw: unknown): string {
+  let s = String(raw ?? 'Prince');
+  s = s.replace(/[\u0000-\u001f\u007f]/g, '');
+  if (s.length > MAX_NAME_LEN) s = s.slice(0, MAX_NAME_LEN);
+  s = s.trim();
+  return s || 'Prince';
+}
+
+function finiteNumber(n: unknown, fallback = 0): number {
+  const v = Number(n);
+  return Number.isFinite(v) ? v : fallback;
+}
+
 function parsePlayer(raw: unknown): RemotePlayerState {
-  const p = raw as Record<string, unknown>;
-  const pos = (p.position ?? { x: 0, y: 0 }) as Vec2;
-  const vel = (p.velocity ?? { x: 0, y: 0 }) as Vec2;
+  const p = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const pos = (p.position && typeof p.position === 'object' ? p.position : {}) as Record<string, unknown>;
+  const vel = (p.velocity && typeof p.velocity === 'object' ? p.velocity : {}) as Record<string, unknown>;
   return {
-    id: Number(p.id ?? -1),
-    name: String(p.name ?? 'Prince'),
-    position: { x: Number(pos.x ?? 0), y: Number(pos.y ?? 0) },
-    velocity: { x: Number(vel.x ?? 0), y: Number(vel.y ?? 0) },
+    id: finiteNumber(p.id, -1),
+    name: sanitizeName(p.name),
+    position: { x: finiteNumber(pos.x), y: finiteNumber(pos.y) },
+    velocity: { x: finiteNumber(vel.x), y: finiteNumber(vel.y) },
     facing: Boolean(p.facing ?? true),
     onGround: Boolean(p.onGround ?? false),
-    animTime: Number(p.animTime ?? 0),
-    sprite: Number(p.sprite ?? 0) | 0,
-    screen: Number(p.screen ?? 0) | 0,
+    animTime: finiteNumber(p.animTime),
+    sprite: finiteNumber(p.sprite) | 0,
+    screen: finiteNumber(p.screen) | 0,
   };
 }
 
@@ -96,7 +118,7 @@ export class Network {
   constructor(callbacks: NetworkCallbacks = {}, url?: string, name?: string) {
     this.callbacks = callbacks;
     this.url = url ?? defaultServerUrl();
-    this.name = name ?? this.pickName();
+    this.name = sanitizeName(name ?? this.pickName());
   }
 
   private pickName(): string {
@@ -110,7 +132,7 @@ export class Network {
   }
 
   connect(name?: string): void {
-    if (name) this.name = name;
+    if (name) this.name = sanitizeName(name);
     this.manuallyClosed = false;
     this.openSocket();
   }

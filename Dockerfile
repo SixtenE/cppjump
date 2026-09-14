@@ -4,7 +4,7 @@
 #   - Builds the Vite/Phaser web client  -> /srv/web (static)
 #   - Builds the C++17 WebSocket relay   -> /usr/local/bin/jump_server
 #   - Runtime: Caddy serves the static site on $PORT and reverse-proxies
-#     /ws to the C++ relay on 127.0.0.1:8080 (Caddy handles WS upgrade).
+#     /ws to the C++ relay on 127.0.0.1:8090 (Caddy handles WS upgrade).
 #
 # Everything is built against Alpine/musl so the compiled binary matches
 # the runtime libc.

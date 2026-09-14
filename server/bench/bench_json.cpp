@@ -33,13 +33,13 @@ static json::Value makePlayerState(int id, const std::string& name) {
   state["sprite"] = json::Value::mkNum(3);
   state["screen"] = json::Value::mkNum(1);
 
-  // This mirrors playerJson(): id + name + copied state fields.
+  // This mirrors playerJson(): copy state fields, then apply server id/name last.
   json::Value v = json::Value::mkObj();
-  v["id"] = json::Value::mkNum(id);
-  v["name"] = json::Value::mkStr(name);
   if (state.isObj()) {
     for (const auto& kv : *state.obj) v[kv.first] = kv.second;
   }
+  v["id"] = json::Value::mkNum(id);
+  v["name"] = json::Value::mkStr(name);
   return v;
 }
 
