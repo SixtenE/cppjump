@@ -279,6 +279,58 @@ def test_non_string_name_defaults(port: int) -> None:
     observer.close()
 
 
+def _is_valid_utf8(data: bytes) -> bool:
+    try:
+        data.decode("utf-8")
+        return True
+    except UnicodeDecodeError:
+        return False
+
+
+def test_invalid_utf8_name_not_relayed(port: int) -> None:
+    """A malicious client must not be able to make the server emit a frame
+    with invalid UTF-8, which would fail every other client's connection
+    (RFC 6455 requires text frames to be valid UTF-8)."""
+    observer = ws_connect("127.0.0.1", port)
+    ws_send_text(observer, json.dumps({"type": "hello", "name": "Obs"}))
+    recv_json_of_type(observer, "init")
+
+    mal = ws_connect("127.0.0.1", port)
+    # A lone high surrogate (\uD800) followed by regular text. Decoded naively
+    # this yields the invalid byte sequence ED A0 80; the server must never
+    # relay that, or every other client's browser would drop the connection.
+    ws_send_text(mal, '{"type":"hello","name":"\\uD800bad"}')
+
+    # Every frame the observer receives must be valid UTF-8.
+    saw_join = False
+    for _ in range(20):
+        hdr0 = _sock_recv(observer, 1)[0]
+        hdr1 = _sock_recv(observer, 1)[0]
+        opcode = hdr0 & 0x0F
+        n = hdr1 & 0x7F
+        if n == 126:
+            n = struct.unpack("!H", _sock_recv(observer, 2))[0]
+        elif n == 127:
+            n = struct.unpack("!Q", _sock_recv(observer, 8))[0]
+        payload = _sock_recv(observer, n)
+        if opcode == 0x8:
+            break
+        if opcode in (0x9, 0xA):
+            continue
+        assert _is_valid_utf8(payload), f"server emitted invalid UTF-8: {payload!r}"
+        msg = json.loads(payload.decode("utf-8"))
+        if msg.get("type") == "join":
+            name = msg["player"]["name"]
+            # The regular text survives; no lone-surrogate bytes leak through.
+            assert "bad" in name, f"unexpected relayed name: {name!r}"
+            assert b"\xed\xa0\x80" not in name.encode("utf-8")
+            saw_join = True
+            break
+    assert saw_join, "never saw the malicious client's join"
+    mal.close()
+    observer.close()
+
+
 def main() -> int:
     port = pick_port()
     proc = start_server(port)
@@ -289,6 +341,7 @@ def main() -> int:
         test_oversized_frame_rejected(port)
         test_unmasked_frame_rejected(port)
         test_non_string_name_defaults(port)
+        test_invalid_utf8_name_not_relayed(port)
         print("test_relay: ok")
         return 0
     finally:

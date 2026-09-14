@@ -258,6 +258,19 @@ class Parser {
     return v;
   }
 
+  uint32_t parseHex4() {
+    uint32_t cp = 0;
+    for (int k = 0; k < 4; k++) {
+      char h = next();
+      cp <<= 4;
+      if (h >= '0' && h <= '9') cp |= h - '0';
+      else if (h >= 'a' && h <= 'f') cp |= h - 'a' + 10;
+      else if (h >= 'A' && h <= 'F') cp |= h - 'A' + 10;
+      else throw std::runtime_error("JSON: bad \\u");
+    }
+    return cp;
+  }
+
   Value parseString() {
     expect('"');
     std::string out;
@@ -276,22 +289,44 @@ class Parser {
           case 'b': out.push_back('\b'); break;
           case 'f': out.push_back('\f'); break;
           case 'u': {
-            int cp = 0;
-            for (int k = 0; k < 4; k++) {
-              char h = next();
-              cp <<= 4;
-              if (h >= '0' && h <= '9') cp |= h - '0';
-              else if (h >= 'a' && h <= 'f') cp |= h - 'a' + 10;
-              else if (h >= 'A' && h <= 'F') cp |= h - 'A' + 10;
-              else throw std::runtime_error("JSON: bad \\u");
+            uint32_t cp = parseHex4();
+            // Combine a UTF-16 surrogate pair (\uD800-\uDBFF followed by
+            // \uDC00-\uDFFF) into a single astral code point. An unpaired
+            // surrogate is not a valid Unicode scalar value and cannot be
+            // encoded as UTF-8, so substitute U+FFFD. This guarantees the
+            // decoded string is always well-formed UTF-8 (WebSocket text
+            // frames require it; see RFC 6455 / RFC 8259 §7).
+            if (cp >= 0xD800 && cp <= 0xDBFF) {
+              if (i_ + 1 < s_.size() && s_[i_] == '\\' && s_[i_ + 1] == 'u') {
+                size_t save = i_;
+                i_ += 2;
+                uint32_t lo = parseHex4();
+                if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                  cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                } else {
+                  // Not a low surrogate: leave that escape for the next
+                  // iteration and emit a replacement for the lone high one.
+                  i_ = save;
+                  cp = 0xFFFD;
+                }
+              } else {
+                cp = 0xFFFD;
+              }
+            } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
+              cp = 0xFFFD;  // lone low surrogate
             }
             if (cp < 0x80) {
               out.push_back((char)cp);
             } else if (cp < 0x800) {
               out.push_back((char)(0xC0 | (cp >> 6)));
               out.push_back((char)(0x80 | (cp & 0x3F)));
-            } else {
+            } else if (cp < 0x10000) {
               out.push_back((char)(0xE0 | (cp >> 12)));
+              out.push_back((char)(0x80 | ((cp >> 6) & 0x3F)));
+              out.push_back((char)(0x80 | (cp & 0x3F)));
+            } else {
+              out.push_back((char)(0xF0 | (cp >> 18)));
+              out.push_back((char)(0x80 | ((cp >> 12) & 0x3F)));
               out.push_back((char)(0x80 | ((cp >> 6) & 0x3F)));
               out.push_back((char)(0x80 | (cp & 0x3F)));
             }
