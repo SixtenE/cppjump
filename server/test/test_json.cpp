@@ -82,6 +82,37 @@ int main() {
     CHECK(s.find("\"ok\":true") != std::string::npos);
   }
 
+  // A surrogate pair must combine into one 4-byte UTF-8 code point (U+1F3AE).
+  {
+    json::Value v = json::parse("\"\\uD83C\\uDFAE\"");
+    CHECK(v.isStr());
+    const std::string& s = v.str;
+    CHECK(s.size() == 4);
+    CHECK((unsigned char)s[0] == 0xF0 && (unsigned char)s[1] == 0x9F &&
+          (unsigned char)s[2] == 0x8E && (unsigned char)s[3] == 0xAE);
+  }
+
+  // A lone high surrogate must become U+FFFD (EF BF BD), never a raw
+  // lone-surrogate byte sequence (which would be invalid UTF-8).
+  {
+    json::Value v = json::parse("\"\\uD800x\"");
+    CHECK(v.isStr());
+    const std::string& s = v.str;
+    CHECK(s.size() == 4);
+    CHECK((unsigned char)s[0] == 0xEF && (unsigned char)s[1] == 0xBF &&
+          (unsigned char)s[2] == 0xBD && s[3] == 'x');
+  }
+
+  // A lone low surrogate must also become U+FFFD.
+  {
+    json::Value v = json::parse("\"\\uDC00\"");
+    CHECK(v.isStr());
+    const std::string& s = v.str;
+    CHECK(s.size() == 3);
+    CHECK((unsigned char)s[0] == 0xEF && (unsigned char)s[1] == 0xBF &&
+          (unsigned char)s[2] == 0xBD);
+  }
+
   if (gFails) {
     std::fprintf(stderr, "%d check(s) failed\n", gFails);
     return 1;
